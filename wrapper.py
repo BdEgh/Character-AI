@@ -1,10 +1,14 @@
+import asyncio
 import json
 import aiohttp
 
 
 class CharacterAI:
-    def __init__(self):
+    def __init__(self, token=None):
         self.token = None
+        self.user = None
+        if token is not None:
+            asyncio.run(self.authenticate(token))
 
     def get_headers(self, auth=False):
         headers = {'Content-Type': 'application/json', 'User-Agent': 'Chrome/79'}
@@ -51,6 +55,8 @@ class CharacterAI:
         body = {'access_token': token}
         data = await self.post_query(url, body, auth=False)
         self.token = data.get('key')
+        userdata = await self.get_user()
+        self.user = userdata['user']['name']
 
     async def get_categories(self):
         url = 'https://beta.character.ai/chat/character/categories/'
@@ -64,48 +70,43 @@ class CharacterAI:
         url = 'https://beta.character.ai/chat/user/'
         return await self.get_query(url, True)
 
-    # async def get_featured(self):
-    #     url = 'https://beta.character.ai/chat/characters/featured/'
-    #     return await self.get_query(url, True)
-
-    # async def get_characters_by_categories(self, curated=False):
-    #     categories = 'curated_categories' if curated else 'categories'
-    #     url = f'https://beta.character.ai/chat/{categories}'
-    #     return await self.get_query(url, True)
-
     async def get_character_info(self, character_id):
         url = 'https://beta.character.ai/chat/character/info/'
         body = {'external_id': character_id}
         return await self.post_query(url, body, True)
 
-    async def create_new_chat(self, character_id):
+    async def create_new_chat(self, character_id, load_char_data=True):
         body = {'character_external_id': character_id,
                 'history_external_id': None}
         url = 'https://beta.character.ai/chat/history/create/'
         data = await self.post_query(url, body, True)
-        return AIChat(self, character_id, data)
+        character_data = (await self.get_character_info(character_id)).get('character') if load_char_data else None
+        return AIChat(self, character_id, data, character_data)
 
-    async def continue_chat(self, character_id, history_id):
+    async def continue_chat(self, character_id, history_id, load_char_data=True):
         url = 'https://beta.character.ai/chat/history/continue/'
         body = {'character_external_id': character_id,
                 'history_external_id': history_id}
         data = await self.post_query(url, body, True)
-        return AIChat(self, character_id, data)
+        character_data = (await self.get_character_info(character_id)).get('character') if load_char_data else None
+        return AIChat(self, character_id, data, character_data)
 
-    async def continue_last_or_create_chat(self, character_id):
+    async def continue_last_or_create_chat(self, character_id, load_char_data=True):
         url = 'https://beta.character.ai/chat/history/continue/'
         body = {'character_external_id': character_id,
                 'history_external_id': None}
         data = await self.post_query(url, body, True)
-        if data.get('status') == 'No Such History':
+        if data is None:
             return await self.create_new_chat(character_id)
-        return AIChat(self, character_id, data)
+        character_data = (await self.get_character_info(character_id)).get('character') if load_char_data else None
+        return AIChat(self, character_id, data, character_data)
 
 
 class AIChat:
-    def __init__(self, client, character_id, continue_body):
+    def __init__(self, client, character_id, continue_body, character_data=None):
         self.client = client
         self.character_id = character_id
+        self.character_data = character_data
         self.external_id = continue_body.get('external_id')
         ai = next(filter(lambda participant: not participant['is_human'], continue_body['participants']))
         self.ai_id = ai['user']['username']
@@ -145,4 +146,7 @@ class AIChat:
         url = 'https://beta.character.ai/chat/streaming/'
         async for answer in self.client.post_complicated_query(url, body, True):
             if answer is not None:
-                yield answer['replies'][0], answer['src_char']['participant']['name'], answer['avatar_file_name']
+                yield answer['replies'][0]['text'], \
+                    answer['src_char']['participant']['name'], \
+                    f"https://characterai.io/i/400/static/avatars/{answer['src_char']['avatar_file_name']}", \
+                    answer['is_final_chunk']
